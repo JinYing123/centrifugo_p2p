@@ -112,6 +112,46 @@ type Config struct {
 	// EnableUnreleasedFeatures enables unreleased features. These features are not stable and may be removed even
 	// in minor release update. Evaluate and share feedback if you find some feature useful and want it to be stabilized.
 	EnableUnreleasedFeatures bool `mapstructure:"enable_unreleased_features" json:"enable_unreleased_features" envconfig:"enable_unreleased_features" toml:"enable_unreleased_features" yaml:"enable_unreleased_features"`
+
+	// P2P 节点发现配置 (简单UDP发现)
+	P2P P2PConfig `mapstructure:"p2p" json:"p2p" envconfig:"p2p" toml:"p2p" yaml:"p2p"`
+
+	// P2PBroker 配置 (基于libp2p的分布式Broker，替代Redis)
+	P2PBroker P2PBrokerConfig `mapstructure:"p2p_broker" json:"p2p_broker" envconfig:"p2p_broker" toml:"p2p_broker" yaml:"p2p_broker"`
+}
+
+// P2PConfig P2P节点发现配置 (基础UDP发现，用于简单场景)
+type P2PConfig struct {
+	// Enabled 是否启用P2P节点发现
+	Enabled bool `mapstructure:"enabled" json:"enabled" envconfig:"enabled" toml:"enabled" yaml:"enabled"`
+	// DiscoveryPort P2P发现服务监听的UDP端口
+	DiscoveryPort int `mapstructure:"discovery_port" json:"discovery_port" envconfig:"discovery_port" toml:"discovery_port" yaml:"discovery_port" default:"19000"`
+	// AdvertiseIP 对外广播的IP地址，留空则自动获取公网IP
+	AdvertiseIP string `mapstructure:"advertise_ip" json:"advertise_ip" envconfig:"advertise_ip" toml:"advertise_ip" yaml:"advertise_ip"`
+	// AdvertisePort 对外广播的Centrifugo服务端口，默认使用http_server.port
+	AdvertisePort int `mapstructure:"advertise_port" json:"advertise_port" envconfig:"advertise_port" toml:"advertise_port" yaml:"advertise_port"`
+	// Interval 心跳间隔时间(秒)
+	Interval int `mapstructure:"interval" json:"interval" envconfig:"interval" toml:"interval" yaml:"interval" default:"30"`
+	// BootstrapNodes 引导节点列表，格式: ["ip:port", "ip:port"]
+	BootstrapNodes []string `mapstructure:"bootstrap_nodes" json:"bootstrap_nodes" envconfig:"bootstrap_nodes" toml:"bootstrap_nodes" yaml:"bootstrap_nodes"`
+}
+
+// P2PBrokerConfig P2P Broker 配置 (基于libp2p，用于替代Redis的集群方案)
+type P2PBrokerConfig struct {
+	// Enabled 是否启用P2P Broker
+	Enabled bool `mapstructure:"enabled" json:"enabled" envconfig:"enabled" toml:"enabled" yaml:"enabled"`
+	// ListenPort libp2p监听端口
+	ListenPort int `mapstructure:"listen_port" json:"listen_port" envconfig:"listen_port" toml:"listen_port" yaml:"listen_port" default:"4001"`
+	// AdvertiseIP 对外广播的IP地址，留空则自动获取公网IP
+	AdvertiseIP string `mapstructure:"advertise_ip" json:"advertise_ip" envconfig:"advertise_ip" toml:"advertise_ip" yaml:"advertise_ip"`
+	// BootstrapNodes 引导节点列表，格式: ["/ip4/1.2.3.4/tcp/4001/p2p/QmXXX"] 或简化格式 ["1.2.3.4:4001"]
+	BootstrapNodes []string `mapstructure:"bootstrap_nodes" json:"bootstrap_nodes" envconfig:"bootstrap_nodes" toml:"bootstrap_nodes" yaml:"bootstrap_nodes"`
+	// TopicPrefix GossipSub主题前缀
+	TopicPrefix string `mapstructure:"topic_prefix" json:"topic_prefix" envconfig:"topic_prefix" toml:"topic_prefix" yaml:"topic_prefix" default:"centrifugo"`
+	// EnableMDNS 是否启用局域网mDNS发现
+	EnableMDNS bool `mapstructure:"enable_mdns" json:"enable_mdns" envconfig:"enable_mdns" toml:"enable_mdns" yaml:"enable_mdns" default:"true"`
+	// IdentityKeyFile 私钥文件路径，用于固定Peer ID。留空则每次启动生成新的Peer ID
+	IdentityKeyFile string `mapstructure:"identity_key_file" json:"identity_key_file" envconfig:"identity_key_file" toml:"identity_key_file" yaml:"identity_key_file"`
 }
 
 type Meta struct {

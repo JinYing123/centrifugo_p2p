@@ -14,7 +14,7 @@ import (
 	"github.com/centrifugal/centrifuge"
 )
 
-var knownBrokers = []string{"memory", "nats", "redis", "redisnats"}
+var knownBrokers = []string{"memory", "nats", "redis", "redisnats", "p2p"}
 
 // Validate validates config and returns error if problems found.
 func (c Config) Validate() error {

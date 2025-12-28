@@ -21,6 +21,7 @@ import (
 //go:generate internal/gen/api/generate.sh
 func main() {
 	root := app.Centrifugo()
+
 	// Register helper CLI.
 	// See `centrifugo -h` and https://centrifugal.dev/docs/server/console_commands.
 	root.AddCommand(

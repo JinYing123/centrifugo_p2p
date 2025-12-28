@@ -153,7 +153,8 @@ func (h *Executor) Batch(ctx context.Context, req *BatchRequest) *BatchResponse 
 
 // Publish publishes data into channel.
 func (h *Executor) Publish(ctx context.Context, cmd *PublishRequest) *PublishResponse {
-	defer observe(time.Now(), h.config.Protocol, "publish")
+	startTime := time.Now()
+	defer observe(startTime, h.config.Protocol, "publish")
 
 	ch := cmd.Channel
 
@@ -212,6 +213,9 @@ func (h *Executor) Publish(ctx context.Context, cmd *PublishRequest) *PublishRes
 		delta = true
 	}
 
+	prePublishDuration := time.Since(startTime)
+
+	publishStart := time.Now()
 	result, err := h.node.Publish(
 		cmd.Channel, data,
 		centrifuge.WithHistory(historySize, historyTTL.ToDuration(), historyMetaTTL.ToDuration()),
@@ -220,6 +224,26 @@ func (h *Executor) Publish(ctx context.Context, cmd *PublishRequest) *PublishRes
 		centrifuge.WithDelta(delta),
 		centrifuge.WithVersion(cmd.Version, cmd.VersionEpoch),
 	)
+	publishDuration := time.Since(publishStart)
+	totalDuration := time.Since(startTime)
+
+	// Log timing info for debugging slow requests
+	if totalDuration > 100*time.Millisecond {
+		log.Warn().
+			Str("channel", cmd.Channel).
+			Dur("pre_publish_ms", prePublishDuration).
+			Dur("publish_ms", publishDuration).
+			Dur("total_ms", totalDuration).
+			Msg("Slow API publish detected")
+	} else {
+		log.Debug().
+			Str("channel", cmd.Channel).
+			Dur("pre_publish_ms", prePublishDuration).
+			Dur("publish_ms", publishDuration).
+			Dur("total_ms", totalDuration).
+			Msg("API publish completed")
+	}
+
 	if err != nil {
 		log.Error().Err(err).Str("channel", cmd.Channel).Msg("error publishing data to channel")
 		resp.Error = ErrorInternal

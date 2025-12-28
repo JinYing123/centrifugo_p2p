@@ -18,6 +18,8 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/devpage"
 	"github.com/centrifugal/centrifugo/v6/internal/health"
 	"github.com/centrifugal/centrifugo/v6/internal/middleware"
+	"github.com/centrifugal/centrifugo/v6/internal/p2papi"
+	"github.com/centrifugal/centrifugo/v6/internal/p2pbroker"
 	"github.com/centrifugal/centrifugo/v6/internal/swaggerui"
 	"github.com/centrifugal/centrifugo/v6/internal/tools"
 	"github.com/centrifugal/centrifugo/v6/internal/unihttpstream"
@@ -72,6 +74,8 @@ const (
 	HandlerSwagger
 	// HandlerDev handles development page.
 	HandlerDev
+	// HandlerP2P handles P2P API endpoints.
+	HandlerP2P
 )
 
 var handlerText = map[HandlerFlag]string{
@@ -91,10 +95,11 @@ var handlerText = map[HandlerFlag]string{
 	HandlerInit:          "init",
 	HandlerSwagger:       "swagger",
 	HandlerDev:           "dev",
+	HandlerP2P:           "p2p",
 }
 
 func (flags HandlerFlag) String() string {
-	flagsOrdered := []HandlerFlag{HandlerWebsocket, HandlerWebtransport, HandlerHTTPStream, HandlerSSE, HandlerEmulation, HandlerAPI, HandlerAdmin, HandlerPrometheus, HandlerDebug, HandlerHealth, HandlerUniWebsocket, HandlerUniSSE, HandlerUniHTTPStream, HandlerSwagger, HandlerDev, HandlerInit}
+	flagsOrdered := []HandlerFlag{HandlerWebsocket, HandlerWebtransport, HandlerHTTPStream, HandlerSSE, HandlerEmulation, HandlerAPI, HandlerAdmin, HandlerPrometheus, HandlerDebug, HandlerHealth, HandlerUniWebsocket, HandlerUniSSE, HandlerUniHTTPStream, HandlerSwagger, HandlerDev, HandlerInit, HandlerP2P}
 	var endpoints []string
 	for _, flag := range flagsOrdered {
 		text, ok := handlerText[flag]
@@ -110,7 +115,7 @@ func (flags HandlerFlag) String() string {
 
 // Mux returns a mux including set of default handlers for Centrifugo server.
 func Mux(
-	n *centrifuge.Node, cfgContainer *config.Container, apiExecutor *api.Executor, flags HandlerFlag, keepHeadersInContext bool, wtServer *webtransport.Server,
+	n *centrifuge.Node, cfgContainer *config.Container, apiExecutor *api.Executor, flags HandlerFlag, keepHeadersInContext bool, wtServer *webtransport.Server, p2pBroker *p2pbroker.P2PBroker,
 ) *http.ServeMux {
 	mux := http.NewServeMux()
 	cfg := cfgContainer.Config()
@@ -319,6 +324,44 @@ func Mux(
 		mux.Handle(devPrefix+"/", basicChain.Then(devpage.NewHandler(cfg)))
 	}
 
+	if flags&HandlerP2P != 0 && p2pBroker != nil {
+		// Register P2P API endpoints
+		p2pHandler := p2papi.NewHandler(p2pBroker)
+		p2pPrefix := "/p2p"
+
+		// Chain with authentication for admin routes
+		p2pChain := func() alice.Chain {
+			p2pMiddlewares := append([]alice.Constructor{}, commonMiddlewares...)
+			// P2P API uses the same authentication as HTTP API if configured
+			if !cfg.HttpAPI.Insecure {
+				p2pMiddlewares = append(p2pMiddlewares, middleware.NewAPIKeyAuth(cfg.HttpAPI.Key).Middleware)
+			}
+			return alice.New(p2pMiddlewares...)
+		}
+
+		// Chain WITHOUT authentication for client routes (latency testing, nodes discovery)
+		p2pClientChain := func() alice.Chain {
+			p2pMiddlewares := append([]alice.Constructor{}, commonMiddlewares...)
+			// Add CORS for browser access
+			p2pMiddlewares = append(p2pMiddlewares, middleware.NewCORS(getCheckOrigin(cfg)).Middleware)
+			return alice.New(p2pMiddlewares...)
+		}
+
+		// Register authenticated routes
+		for path, handler := range p2pHandler.Routes() {
+			handlePath := p2pPrefix + path
+			mux.Handle(handlePath, p2pChain().Then(handler))
+		}
+
+		// Register client routes (no auth required)
+		for path, handler := range p2pHandler.ClientRoutes() {
+			handlePath := p2pPrefix + path
+			mux.Handle(handlePath, p2pClientChain().Then(handler))
+		}
+
+		log.Info().Str("prefix", p2pPrefix).Msg("P2P API endpoints registered")
+	}
+
 	return mux
 }
 
@@ -371,7 +414,7 @@ func emulationHandlerConfig(cfg config.Config) centrifuge.EmulationConfig {
 }
 
 func runHTTPServers(
-	n *centrifuge.Node, cfgContainer *config.Container, apiExecutor *api.Executor, keepHeadersInContext bool,
+	n *centrifuge.Node, cfgContainer *config.Container, apiExecutor *api.Executor, keepHeadersInContext bool, p2pBroker *p2pbroker.P2PBroker,
 ) ([]*http.Server, error) {
 	cfg := cfgContainer.Config()
 
@@ -452,6 +495,9 @@ func runHTTPServers(
 	if useConnInit {
 		portFlags |= HandlerInit
 	}
+	if p2pBroker != nil {
+		portFlags |= HandlerP2P
+	}
 	addrToHandlerFlags[externalAddr] = portFlags
 
 	internalAddr := net.JoinHostPort(httpInternalAddress, httpInternalPort)
@@ -515,7 +561,7 @@ func runHTTPServers(
 			}
 		}
 
-		mux := Mux(n, cfgContainer, apiExecutor, handlerFlags, keepHeadersInContext, wtServer)
+		mux := Mux(n, cfgContainer, apiExecutor, handlerFlags, keepHeadersInContext, wtServer, p2pBroker)
 
 		if useHTTP3 {
 			wtServer.H3 = http3.Server{

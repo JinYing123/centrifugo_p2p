@@ -36,6 +36,7 @@ import (
 	"go.uber.org/automaxprocs/maxprocs"
 	"google.golang.org/grpc"
 
+	"github.com/centrifugal/centrifugo/v6/internal/p2p"
 	_ "google.golang.org/grpc/encoding/gzip"
 )
 
@@ -136,7 +137,7 @@ func Run(cmd *cobra.Command, configFile string) {
 		}
 	}
 
-	err = configureEngines(node, cfgContainer)
+	engineResult, err := configureEngines(node, cfgContainer)
 	if err != nil {
 		log.Fatal().Err(err).Msg("configure engines error")
 	}
@@ -207,6 +208,47 @@ func Run(cmd *cobra.Command, configFile string) {
 
 	if cfg.Graphite.Enabled {
 		serviceManager.Register(graphiteExporter(cfg, nodeCfg))
+	}
+
+	if cfg.P2P.Enabled {
+		log.Info().Msg("启用P2P节点发现服务")
+
+		// 设置默认值
+		discoveryPort := cfg.P2P.DiscoveryPort
+		if discoveryPort == 0 {
+			discoveryPort = 19000
+		}
+
+		interval := cfg.P2P.Interval
+		if interval == 0 {
+			interval = 30
+		}
+
+		// 创建P2P配置
+		p2pConfig := &p2p.Config{
+			Enabled:        cfg.P2P.Enabled,
+			DiscoveryPort:  discoveryPort,
+			AdvertiseIP:    cfg.P2P.AdvertiseIP,
+			AdvertisePort:  cfg.P2P.AdvertisePort,
+			Interval:       time.Duration(interval) * time.Second,
+			BootstrapNodes: cfg.P2P.BootstrapNodes,
+		}
+
+		// 如果未指定广告端口，使用Centrifugo端口
+		if p2pConfig.AdvertisePort == 0 {
+			p2pConfig.AdvertisePort = cfg.HTTP.Port
+		}
+
+		// 创建并注册P2P服务（公网IP会在服务内部自动获取）
+		p2pService := p2p.NewDiscoveryService(p2pConfig, cfg.HTTP.Port)
+		p2pService.SetLogger(log.Logger)
+		serviceManager.Register(p2pService)
+
+		log.Info().
+			Str("node_id", p2pService.GetNodeID()).
+			Int("discovery_port", p2pConfig.DiscoveryPort).
+			Strs("bootstrap_nodes", p2pConfig.BootstrapNodes).
+			Msg("P2P节点发现服务已注册")
 	}
 
 	var statsSender *usage.Sender
@@ -283,7 +325,7 @@ func Run(cmd *cobra.Command, configFile string) {
 		}
 	}
 
-	httpServers, err := runHTTPServers(node, cfgContainer, httpAPIExecutor, keepHeadersInContext)
+	httpServers, err := runHTTPServers(node, cfgContainer, httpAPIExecutor, keepHeadersInContext, engineResult.P2PBroker)
 	if err != nil {
 		log.Fatal().Err(err).Msg("error running HTTP server")
 	}

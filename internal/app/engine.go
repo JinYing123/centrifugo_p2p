@@ -6,14 +6,21 @@ import (
 	"github.com/centrifugal/centrifugo/v6/internal/config"
 	"github.com/centrifugal/centrifugo/v6/internal/confighelpers"
 	"github.com/centrifugal/centrifugo/v6/internal/natsbroker"
+	"github.com/centrifugal/centrifugo/v6/internal/p2pbroker"
 	"github.com/centrifugal/centrifugo/v6/internal/redisnatsbroker"
 
 	"github.com/centrifugal/centrifuge"
 	"github.com/rs/zerolog/log"
 )
 
-func configureEngines(node *centrifuge.Node, cfgContainer *config.Container) error {
+// EngineResult holds the result of engine configuration
+type EngineResult struct {
+	P2PBroker *p2pbroker.P2PBroker
+}
+
+func configureEngines(node *centrifuge.Node, cfgContainer *config.Container) (*EngineResult, error) {
 	cfg := cfgContainer.Config()
+	result := &EngineResult{}
 
 	var broker centrifuge.Broker
 	var presenceManager centrifuge.PresenceManager
@@ -27,7 +34,7 @@ func configureEngines(node *centrifuge.Node, cfgContainer *config.Container) err
 		case "redis":
 			broker, presenceManager, engineMode, err = createRedisEngine(node, cfgContainer)
 		default:
-			return fmt.Errorf("unknown engine type: %s", cfg.Engine.Type)
+			return nil, fmt.Errorf("unknown engine type: %s", cfg.Engine.Type)
 		}
 		event := log.Info().Str("engine_type", cfg.Engine.Type)
 		if engineMode != "" {
@@ -35,7 +42,7 @@ func configureEngines(node *centrifuge.Node, cfgContainer *config.Container) err
 		}
 		event.Msg("initializing engine")
 		if err != nil {
-			return fmt.Errorf("error creating engine: %v", err)
+			return nil, fmt.Errorf("error creating engine: %v", err)
 		}
 	} else {
 		log.Info().Msgf("both broker and presence manager enabled, skip engine initialization")
@@ -52,29 +59,37 @@ func configureEngines(node *centrifuge.Node, cfgContainer *config.Container) err
 		case "nats":
 			broker, err = NatsBroker(node, cfg)
 			brokerMode = "nats"
+		case "p2p":
+			p2pBroker, err := P2PBroker(node, cfg)
+			if err != nil {
+				return nil, fmt.Errorf("error creating p2p broker: %v", err)
+			}
+			broker = p2pBroker
+			result.P2PBroker = p2pBroker
+			brokerMode = "p2p/gossipsub"
 		case "redisnats":
 			if !cfg.EnableUnreleasedFeatures {
-				return fmt.Errorf("redisnats broker requires enable_unreleased_features on")
+				return nil, fmt.Errorf("redisnats broker requires enable_unreleased_features on")
 			}
 			log.Warn().Msg("redisnats broker is not released, it may be changed or removed at any point")
 			redisBroker, redisBrokerMode, err := createRedisBroker(node, cfgContainer)
 			if err != nil {
-				return fmt.Errorf("error creating redis broker: %v", err)
+				return nil, fmt.Errorf("error creating redis broker: %v", err)
 			}
 			brokerMode = redisBrokerMode + "+nats"
 			natsBroker, err := NatsBroker(node, cfg)
 			if err != nil {
-				return fmt.Errorf("error creating nats broker: %v", err)
+				return nil, fmt.Errorf("error creating nats broker: %v", err)
 			}
 			broker, err = redisnatsbroker.New(natsBroker, redisBroker)
 			if err != nil {
-				return fmt.Errorf("error creating redisnats broker: %v", err)
+				return nil, fmt.Errorf("error creating redisnats broker: %v", err)
 			}
 		default:
-			return fmt.Errorf("unknown broker type: %s", cfg.Broker.Type)
+			return nil, fmt.Errorf("unknown broker type: %s", cfg.Broker.Type)
 		}
 		if err != nil {
-			return fmt.Errorf("error creating broker: %v", err)
+			return nil, fmt.Errorf("error creating broker: %v", err)
 		}
 		event := log.Info().Str("broker_type", cfg.Broker.Type)
 		if brokerMode != "" {
@@ -94,10 +109,10 @@ func configureEngines(node *centrifuge.Node, cfgContainer *config.Container) err
 		case "redis":
 			presenceManager, presenceManagerMode, err = createRedisPresenceManager(node, cfgContainer)
 		default:
-			return fmt.Errorf("unknown presence manager type: %s", cfg.PresenceManager.Type)
+			return nil, fmt.Errorf("unknown presence manager type: %s", cfg.PresenceManager.Type)
 		}
 		if err != nil {
-			return fmt.Errorf("error creating presence manager: %v", err)
+			return nil, fmt.Errorf("error creating presence manager: %v", err)
 		}
 		event := log.Info().Str("presence_manager_type", cfg.PresenceManager.Type)
 		if presenceManagerMode != "" {
@@ -110,7 +125,7 @@ func configureEngines(node *centrifuge.Node, cfgContainer *config.Container) err
 
 	node.SetBroker(broker)
 	node.SetPresenceManager(presenceManager)
-	return nil
+	return result, nil
 }
 
 func createMemoryBroker(n *centrifuge.Node) (centrifuge.Broker, error) {
@@ -155,6 +170,30 @@ func memoryPresenceManagerConfig() (*centrifuge.MemoryPresenceManagerConfig, err
 
 func NatsBroker(node *centrifuge.Node, cfg config.Config) (*natsbroker.NatsBroker, error) {
 	return natsbroker.New(node, cfg.Broker.Nats)
+}
+
+func P2PBroker(node *centrifuge.Node, cfg config.Config) (*p2pbroker.P2PBroker, error) {
+	p2pCfg := p2pbroker.Config{
+		Enabled:         cfg.P2PBroker.Enabled,
+		ListenPort:      cfg.P2PBroker.ListenPort,
+		AdvertiseIP:     cfg.P2PBroker.AdvertiseIP,
+		BootstrapNodes:  cfg.P2PBroker.BootstrapNodes,
+		TopicPrefix:     cfg.P2PBroker.TopicPrefix,
+		EnableMDNS:      cfg.P2PBroker.EnableMDNS,
+		IdentityKeyFile: cfg.P2PBroker.IdentityKeyFile,
+		CentrifugoPort:  cfg.HTTP.Port,         // Centrifugo HTTP/WebSocket port
+		CentrifugoTLS:   cfg.HTTP.TLS.Enabled,  // Whether TLS is enabled
+	}
+
+	// Set defaults
+	if p2pCfg.ListenPort == 0 {
+		p2pCfg.ListenPort = 4001
+	}
+	if p2pCfg.TopicPrefix == "" {
+		p2pCfg.TopicPrefix = "centrifugo"
+	}
+
+	return p2pbroker.New(node, p2pCfg)
 }
 
 func createRedisEngine(n *centrifuge.Node, cfgContainer *config.Container) (*centrifuge.RedisBroker, centrifuge.PresenceManager, string, error) {
