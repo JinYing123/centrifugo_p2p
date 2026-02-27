@@ -1,57 +1,172 @@
-Centrifugo is an open-source scalable real-time messaging server. Centrifugo can instantly deliver messages to application online users connected over supported transports (WebSocket, HTTP-streaming, Server-Sent Events (aka EventSource), GRPC, WebTransport). Centrifugo has the concept of channel subscriptions – so it's a user-facing PUB/SUB server.
+# Centrifugo P2P
 
-Centrifugo is language-agnostic and can be used to build chat apps, live comments, multiplayer games, real-time data visualizations, collaborative tools, etc. in combination with any backend. It is well suited for modern architectures and allows decoupling the business logic from the real-time transport layer.
+基于 [Centrifugo v6](https://github.com/centrifugal/centrifugo) 的 P2P 改造版本，使用 **libp2p + GossipSub** 替代 Redis 实现分布式消息 Broker，让 Centrifugo 集群**无需外部依赖**即可自组网运行。
 
-Several official client SDKs for browser and mobile development wrap the bidirectional protocol. In addition, Centrifugo supports a unidirectional approach for simple use cases with no SDK dependency.
+## P2P 改造概述
 
-## Documentation
+原版 Centrifugo 的多节点集群依赖 Redis/Nats 作为消息 Broker。本项目通过 P2P 网络替代中心化的 Broker，实现：
 
-* [Centrifugo official documentation site](https://centrifugal.dev)
-* [Installation instructions](https://centrifugal.dev/docs/getting-started/installation)
-* [Getting started tutorial](https://centrifugal.dev/docs/getting-started/quickstart)
-* [Design overview and idiomatic usage](https://centrifugal.dev/docs/getting-started/design)
-* [Build a WebSocket chat/messenger app with Centrifugo](https://centrifugal.dev/docs/tutorial/intro) tutorial
-* [Centrifugal blog](https://centrifugal.dev/blog)
-* [FAQ](https://centrifugal.dev/docs/faq)
+- **去中心化集群** — 节点之间通过 libp2p 直连，无需 Redis
+- **自动节点发现** — 支持 Bootstrap 引导节点 + mDNS 局域网发现
+- **GossipSub 消息分发** — 频道消息通过 GossipSub 协议在节点间传播
+- **客户端智能路由** — 前端可通过 P2P API 发现所有节点并选择最低延迟的服务器
 
-## Join community
+## 架构
 
-* [Telegram](https://t.me/joinchat/ABFVWBE0AhkyyhREoaboXQ)
-* [Discord](https://discord.gg/tYgADKx)
-* [Twitter](https://twitter.com/centrifugalabs)
+```
+┌──────────────────────────────────────────────────────────┐
+│                    Client (Frontend)                      │
+│  1. GET /p2p/nodes → 获取所有节点列表                       │
+│  2. GET /p2p/latency → 测速选择最优节点                     │
+│  3. WebSocket 连接到最优节点                                │
+└────────────────────┬─────────────────────────────────────┘
+                     │
+        ┌────────────┼────────────┐
+        ▼            ▼            ▼
+   ┌─────────┐ ┌─────────┐ ┌─────────┐
+   │ Node A  │ │ Node B  │ │ Node C  │
+   │ :8000   │ │ :8000   │ │ :8000   │
+   │ :4001   │ │ :4001   │ │ :4001   │
+   └────┬────┘ └────┬────┘ └────┬────┘
+        │            │            │
+        └────── libp2p ───────────┘
+            GossipSub 消息同步
+```
 
-## Why Centrifugo
+## 新增模块
 
-The core idea of Centrifugo is simple – it's a PUB/SUB server on top of modern real-time transports:
+| 模块 | 路径 | 说明 |
+|------|------|------|
+| **P2P Broker** | `internal/p2pbroker/` | 实现 `centrifuge.Broker` 接口，基于 libp2p + GossipSub |
+| **P2P Discovery** | `internal/p2p/` | UDP 节点发现服务（心跳、注册、引导节点） |
+| **P2P API** | `internal/p2papi/` | HTTP API，提供节点状态、Peer 管理、延迟测试等 |
+| **压力测试** | `stress_test/` | 发布性能测试 + Goroutine 泄漏检测 |
 
-<img src="https://centrifugal.dev/img/protocol_pub_sub.png?v=2" />
+## 快速开始
 
-The hard part is to make this concept production-ready, efficient, flexible and available from different application environments. Centrifugo is a mature solution that already helped many projects with adding real-time features and scale towards many concurrent connections. Centrifugo provides a set of features not available in other open-source solutions in the area:
+### 1. 编译
 
-* Efficient real-time transports: WebSocket, HTTP-streaming, Server-Sent Events, GRPC, WebTransport
-* Built-in scalability with Redis (or Redis Cluster, or Redis-compatible storage – ex. AWS Elasticache, Valkey, KeyDB, DragonflyDB, etc), or Nats.
-* Simple HTTP and GRPC server API to communicate with Centrifugo from the app backend
-* Asynchronous PostgreSQL and Kafka consumers to support transactional outbox and CDC patterns
-* Flexible connection authentication mechanisms: JWT and proxy-like (via request from Centrifugo to the backend)
-* Channel subscription multiplexing over a single connection
-* Different types of subscriptions: client-side and server-side
-* Various channel permission strategies, channel namespace concept
-* Hot message history in channels, with automatic message recovery upon reconnect, cache recovery mode (deliver latest publication immediately upon subscription)
-* Delta compression in channels based on Fossil algorithm
-* Online channel presence information, with join/leave notifications
-* A way to send RPC calls to the backend over the real-time connection
-* Strict and effective client protocol wrapped by several official SDKs
-* JSON and binary Protobuf message transfer, with optimized serialization and built-in batching
-* Beautiful embedded admin web UI
-* Great observability with lots of Prometheus metrics exposed and official Grafana dashboard
-* And much more, visit [Centrifugo documentation site](https://centrifugal.dev)
+```bash
+go build -o centrifugo .
+```
 
-## Backing
+### 2. 配置
 
-This repository is hosted by [packagecloud.io](https://packagecloud.io/).
+在 `config.json` 中启用 P2P Broker：
 
-<a href="https://packagecloud.io/"><img height="46" width="158" alt="Private NPM registry and Maven, RPM, DEB, PyPi and RubyGem Repository · packagecloud" src="https://packagecloud.io/images/packagecloud-badge.png" /></a>
+```json
+{
+  "broker": {
+    "enabled": true,
+    "type": "p2p"
+  },
+  "p2p_broker": {
+    "enabled": true,
+    "listen_port": 4001,
+    "advertise_ip": "",
+    "bootstrap_nodes": [],
+    "topic_prefix": "centrifugo",
+    "enable_mdns": true,
+    "identity_key_file": "/var/opt/p2p_identity.key"
+  }
+}
+```
 
-Also thanks to [JetBrains](https://www.jetbrains.com/) for supporting OSS (most of the code here written in Goland):
+### 3. 运行
 
-<a href="https://www.jetbrains.com/"><img height="140" src="https://resources.jetbrains.com/storage/products/company/brand/logos/jb_beam.png" alt="JetBrains logo"></a>
+**单节点（开发模式，mDNS 自动发现）：**
+
+```bash
+./centrifugo --config config.json
+```
+
+**多节点集群（生产模式）：**
+
+```bash
+# 节点 A（引导节点）
+./centrifugo --config config.json
+
+# 节点 B（指定引导节点）
+# 在 config.json 的 p2p_broker.bootstrap_nodes 中添加节点 A 的地址：
+# ["/ip4/<节点A的IP>/tcp/4001/p2p/<节点A的PeerID>"]
+./centrifugo --config config.json
+```
+
+> 启动后日志会输出本节点的 Peer ID 和监听地址，可用作其他节点的 bootstrap 地址。
+
+## P2P API
+
+### 管理 API（需 API Key）
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/p2p/status` | GET | 节点 P2P 状态（Peer ID、连接数、Topic 数等） |
+| `/p2p/peers` | GET | 已连接 Peer 详情（地址、延迟、协议） |
+| `/p2p/ping` | GET/POST | Ping 所有或指定 Peer |
+| `/p2p/addrs` | GET | 本节点的 multiaddr 地址 |
+| `/p2p/refresh` | POST | 触发节点发现刷新 |
+
+### 客户端 API（无需认证）
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/p2p/nodes` | GET | 获取所有可用 Centrifugo 节点列表（含 WebSocket 地址） |
+| `/p2p/latency` | GET | 延迟测试端点，前端用于测速选择最优节点 |
+
+## 配置参考
+
+### P2P Broker (`p2p_broker`)
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `enabled` | bool | false | 启用 P2P Broker |
+| `listen_port` | int | 4001 | libp2p 监听端口 |
+| `advertise_ip` | string | 自动获取 | 对外广播的 IP |
+| `bootstrap_nodes` | []string | [] | 引导节点地址列表 |
+| `topic_prefix` | string | "centrifugo" | GossipSub Topic 前缀 |
+| `enable_mdns` | bool | true | 启用局域网 mDNS 发现 |
+| `identity_key_file` | string | "" | 私钥文件路径，固定 Peer ID |
+
+### P2P Discovery (`p2p`)
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `enabled` | bool | false | 启用 UDP 节点发现 |
+| `discovery_port` | int | 19000 | UDP 发现端口 |
+| `advertise_ip` | string | 自动获取 | 对外广播的 IP |
+| `advertise_port` | int | 同 HTTP 端口 | 广播的服务端口 |
+| `interval` | int | 30 | 心跳间隔（秒） |
+| `bootstrap_nodes` | []string | [] | 引导节点（`ip:port`） |
+
+## 压力测试
+
+详见 [stress_test/README.md](stress_test/README.md)
+
+```bash
+cd stress_test
+
+# 编译
+go build -o stress ./cmd/stress
+go build -o leaktest ./cmd/leaktest
+
+# 发布性能测试
+./stress -url http://your-server:8000 -messages 5000 -concurrency 20
+
+# Goroutine 泄漏测试
+./leaktest -url http://your-server:8000 -iterations 500
+```
+
+## 与原版 Centrifugo 的区别
+
+| 特性 | 原版 Centrifugo | P2P 版本 |
+|------|----------------|----------|
+| 集群 Broker | Redis / Nats | libp2p + GossipSub |
+| 外部依赖 | 需要 Redis/Nats | 无需任何外部服务 |
+| 节点发现 | 手动配置 | 自动发现（mDNS + Bootstrap） |
+| 消息历史 | 支持（Redis 持久化） | 不支持（纯内存） |
+| 客户端路由 | 自行实现 | 内置 nodes/latency API |
+| 适用场景 | 大规模生产环境 | 中小规模、快速部署、边缘计算 |
+
+## 许可证
+
+同原版 Centrifugo，详见 [LICENSE](LICENSE)。
